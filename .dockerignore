@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv
+env/
+venv/
+ENV/
+.pytest_cache/
+
+# Local development settings
+.vscode/
+.idea/
+
+# Local audio storage (if any)
+local_storage/
+
+# Any temp files
+*.log
+*.tmp
+.DS_Store
+
+# Docker
+Dockerfile
+.dockerignore 

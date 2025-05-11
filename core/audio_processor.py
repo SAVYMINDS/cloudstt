@@ -1,0 +1,2 @@
+from RealtimeSTT import AudioToTextRecorder
+

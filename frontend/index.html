@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time STT Client</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        .controls button { padding: 10px 15px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; background-color: #007bff; color: white; font-size: 16px; }
+        .controls button:hover { background-color: #0056b3; }
+        .controls button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        .status, .messages, .transcript-box { margin-top: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; background-color: #e9ecef; min-height: 50px; }
+        .transcript-box h3 { margin-top: 0; }
+        #realtimeTranscript { white-space: pre-wrap; word-wrap: break-word; }
+        #finalTranscript { white-space: pre-wrap; word-wrap: break-word; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WebSocket Real-time Speech-to-Text</h1>
+
+        <div class="controls">
+            <button id="connectButton">Connect</button>
+            <button id="startButton" disabled>Start Recording</button>
+            <button id="stopButton" disabled>Stop Recording</button>
+        </div>
+
+        <div class="status">
+            <strong>Status:</strong> <span id="statusMessage">Not Connected</span>
+        </div>
+
+        <div class="messages">
+            <h3>Server Messages/Events:</h3>
+            <div id="serverMessages"></div>
+        </div>
+
+        <div class="transcript-box">
+            <h3>Real-time Transcript:</h3>
+            <div id="realtimeTranscript"></div>
+        </div>
+
+        <div class="transcript-box">
+            <h3>Final Transcript:</h3>
+            <div id="finalTranscript"></div>
+        </div>
+    </div>
+
+    <script src="script.js" defer></script>
+</body>
+</html> 

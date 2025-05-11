@@ -1,0 +1,22 @@
+fastapi==0.115.0
+uvicorn>=0.21.1
+python-dotenv==1.0.0
+azure-storage-blob>=12.22.0
+RealtimeSTT==0.3.95
+
+pydantic
+python-multipart
+
+faster-whisper==1.1.1
+# whisperx will be installed separately to avoid conflicts
+pvporcupine==1.9.5
+webrtcvad-wheels==2.0.14
+halo==0.0.31
+torch
+torchaudio
+scipy>=1.15.1
+openwakeword>=0.4.0
+websockets==14.2
+websocket-client==1.8.0
+numpy>=1.23.5
+soundfile==0.13.1 
