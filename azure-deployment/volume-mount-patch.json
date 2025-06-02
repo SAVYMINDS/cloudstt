@@ -1,0 +1,12 @@
+[
+  {
+    "op": "add",
+    "path": "/properties/template/containers/0/volumeMounts",
+    "value": [
+      {
+        "volumeName": "storage",
+        "mountPath": "/app/azurestorage"
+      }
+    ]
+  }
+] 

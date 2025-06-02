@@ -31,8 +31,9 @@ import math
 
 # Import existing services
 from core.diarization_processor import DiarizationService
-from storage.azure_storage import AzureBlobStorage
+from storage.azure_storage import AzureFilesStorage
 from RealtimeSTT import AudioToTextRecorder
+from .realtime_storage_service import RealtimeStorageService
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -168,8 +169,9 @@ class UnifiedTranscriptionService:
     """Unified service for both batch and real-time transcription"""
     
     def __init__(self):
-        self.storage_client = AzureBlobStorage()
+        self.storage_client = AzureFilesStorage()
         self.active_sessions = {}
+        self.realtime_storage = RealtimeStorageService(self.storage_client)  # Enhanced realtime storage
         
     # ========================
     # Shared utility methods
@@ -294,9 +296,9 @@ class UnifiedTranscriptionService:
                                     "total_chunks": chunk_info["total_chunks"]
                                 })
                                 
-                                # Save to Azure (only for chunks)
+                                # Save to Azure Files (only for chunks)
                                 self.storage_client.save_json(
-                                    container_name="audio-output",
+                                    container_name=self.storage_client.BATCH_OUTPUT,
                                     blob_name=result_blob_name,
                                     data=result_data["data"]
                                 )
@@ -332,9 +334,12 @@ class UnifiedTranscriptionService:
                             
                             # Clean up
                             process.terminate()
-                            if os.path.exists(audio_path):
+                            # Only delete if it's a temporary file (not Azure Files storage)
+                            if os.path.exists(audio_path) and not audio_path.startswith('/app/storage'):
                                 os.unlink(audio_path)
                                 logger.info(f"Removed temporary file {audio_path}")
+                            else:
+                                logger.info(f"Preserved Azure Files storage file: {audio_path}")
                             
                             # Extract number of speakers if available
                             num_speakers = 0
@@ -390,9 +395,12 @@ class UnifiedTranscriptionService:
                         "error": f"Processing timed out after {timeout} seconds{chunk_str}"
                     })
             
-            # Clean up
-            if os.path.exists(audio_path):
+            # Clean up - only delete temporary files, not Azure Files storage
+            if os.path.exists(audio_path) and not audio_path.startswith('/app/storage'):
                 os.unlink(audio_path)
+                logger.info(f"Removed temporary file {audio_path}")
+            else:
+                logger.info(f"Preserved Azure Files storage file: {audio_path}")
                 
         except Exception as e:
             logger.error(f"Error in process_audio: {str(e)}", exc_info=True)
@@ -401,9 +409,12 @@ class UnifiedTranscriptionService:
                     "status": "error",
                     "error": str(e)
                 })
-            # Clean up
-            if os.path.exists(audio_path):
+            # Clean up - only delete temporary files, not Azure Files storage
+            if os.path.exists(audio_path) and not audio_path.startswith('/app/storage'):
                 os.unlink(audio_path)
+                logger.info(f"Removed temporary file {audio_path}")
+            else:
+                logger.info(f"Preserved Azure Files storage file: {audio_path}")
 
         # At the end of the function, return a structured empty result if we didn't return earlier
         return {
@@ -439,7 +450,7 @@ class UnifiedTranscriptionService:
             
             # List all results in the job's chunks folder
             result_files = self.storage_client.list_blobs(
-                container_name="audio-output",
+                container_name=self.storage_client.BATCH_OUTPUT,
                 prefix=f"job-{job_id}/chunks/"
             )
             
@@ -452,7 +463,7 @@ class UnifiedTranscriptionService:
             
             for result_file in chunk_result_files:
                 chunk_data = self.storage_client.load_json(
-                    container_name="audio-output",
+                    container_name=self.storage_client.BATCH_OUTPUT,
                     blob_name=result_file
                 )
                 if chunk_data:
@@ -600,7 +611,7 @@ class UnifiedTranscriptionService:
             # Save final result
             final_result_path = f"job-{job_id}/final_result.json"
             self.storage_client.save_json(
-                container_name="audio-output",
+                container_name=self.storage_client.BATCH_OUTPUT,
                 blob_name=final_result_path,
                 data=merged_result
             )
@@ -662,7 +673,7 @@ class UnifiedTranscriptionService:
                 blob_name = f"session-{session_id}/audio.wav"
                 
                 success = self.storage_client.upload_file(
-                    container_name=self.storage_client.INPUT_CONTAINER,
+                    container_name=self.storage_client.REALTIME_SESSIONS,
                     blob_name=blob_name,
                     data=f,
                     content_type="audio/wav",
@@ -676,7 +687,7 @@ class UnifiedTranscriptionService:
             if success:
                 # Generate URL for the audio file
                 audio_url = self.storage_client.get_sas_url(
-                    container_name=self.storage_client.INPUT_CONTAINER,
+                    container_name=self.storage_client.REALTIME_SESSIONS,
                     blob_name=blob_name,
                     duration_hours=24
                 )

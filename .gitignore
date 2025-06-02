@@ -53,6 +53,10 @@ Icon
 # Local storage
 local_storage/
 
+# Test outputs
+test-outputs/
+
 # Temporary files
+temp_audio/
 -H
 .gitign

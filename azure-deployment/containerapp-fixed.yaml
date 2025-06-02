@@ -1,0 +1,30 @@
+apiVersion: Microsoft.App/containerApps
+name: cloudstt-api-gpu
+location: westus3
+properties:
+  managedEnvironmentId: /subscriptions/93044a08-5661-4f1b-b424-5eafe066a9d1/resourceGroups/mvpv1/providers/Microsoft.App/managedEnvironments/cloudstt-env-gpu
+  configuration:
+    activeRevisionsMode: Single
+    ingress:
+      external: true
+      targetPort: 8000
+      transport: Auto
+      corsPolicy:
+        allowedOrigins:
+          - "*"
+      sessionAffinity: true
+    registries:
+      - server: cloudsttacr.azurecr.io
+        username: cloudsttacr
+        passwordSecretRef: cloudsttacrazurecrio-cloudsttacr
+  template:
+    containers:
+      - name: cloudstt-api-gpu
+        image: cloudsttacr.azurecr.io/cloudstt-api-gpu:latest
+        resources:
+          cpu: 2
+          memory: "8Gi"
+    scale:
+      minReplicas: 1
+      maxReplicas: 3
+type: Microsoft.App/containerApps 

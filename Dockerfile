@@ -12,8 +12,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential \
     portaudio19-dev \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Add NVIDIA repository for CUDA and cuDNN
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gnupg \
+    wget \
+    && wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb \
+    && dpkg -i cuda-keyring_1.0-1_all.deb \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    cuda-cudart-11-8 \
+    libcudnn8 \
+    libcudnn8-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f cuda-keyring_1.0-1_all.deb
+
+# Set CUDA related environment variables
+ENV PATH="/usr/local/cuda/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 
 # Set working directory
 WORKDIR /app
@@ -36,6 +55,10 @@ COPY . .
 
 # Expose port for the API
 EXPOSE 8000
+
+# Add health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # Command to run the application
 CMD ["python", "run_api.py"] 

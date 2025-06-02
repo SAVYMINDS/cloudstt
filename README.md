@@ -1,232 +1,267 @@
-# Real-Time Speech-to-Text Streaming API
+# Unified Speech-to-Text API
+
+A production-ready unified API that provides both batch and real-time speech-to-text transcription using OpenAI Whisper models.
 
 
-RealTimeSTT : 
+## 🚀 Quick Start
 
+### Local Development
 
+1. **Clone and Install**
+   ```bash
+   git clone <your-repo>
+   cd cloudstt
+   pip install -r requirements.txt
+   ```
 
+2. **Start the API**
+   ```bash
+   python run_api.py
+   ```
+   The API will be available at `http://localhost:8000`
 
+3. **View API Documentation**
+   - Swagger UI: `http://localhost:8000/docs`
+   - ReDoc: `http://localhost:8000/redoc`
 
+## 📡 API Endpoints
 
+### Batch Transcription
 
-trade off  between real time and main model : 
-1. Real time model is optimized for low latency (< 200ms) and high throughput.
-2. Main time model is optimized for high accuracy and low latency.
+**Upload Audio File**
+```bash
+curl -X POST http://localhost:8000/v1/transcribe \
+  -F "audio_file=@storage/order.wav" \
+  -F 'request_data={"mode":"batch","model":"tiny","language":"en","compute_type":"float32"}'
+```
 
-[Deepgram](https://developers.deepgram.com/docs/live-streaming-audio)
-[AssemblyAI](https://www.assemblyai.com/docs/api-reference/streaming/realtime)
+**Alternative Batch Request Format**
+```bash
+curl -X POST http://localhost:8000/v1/transcribe \
+  -F "audio_file=@audio.mp3" \
+  -F 'request_data={"model":"base","language":"auto","compute_type":"float16"}'
+```
 
+**Check Job Status**
+```bash
+curl http://localhost:8000/v1/v1/jobs/{job_id}
+```
 
-## Overview
-A high-performance, real-time speech-to-text streaming API delivering transcriptions with ultra-low latency (<200ms).
-
-### Models
-- **Real-time Model**: Optimized for low latency (<200ms) and high throughput
-- **Main Model**: Optimized for high accuracy with reasonable latency
-
-## WebSocket Endpoints
-
+**Example Success Response:**
 ```json
 {
-    "CONTROL_CHANNEL": "wss://api.com/v1/stream/control",
-    "AUDIO_CHANNEL": "wss://api.com/v1/stream/audio"
+  "metadata": {
+    "request_id": "ad9b6566-9c0a-4d17-adcb-fd321e203fd3",
+    "status": "completed",
+    "created_at": "2025-06-02T14:56:42.934086",
+    "filename": "order.wav",
+    "file_size_mb": 21.15,
+    "total_processing_time_seconds": 153.2
+  },
+  "result": {
+    "total_duration": 107.967,
+    "num_speakers_detected": 2,
+    "transcript": "Speaker 1: Thank you for calling Martha's flowers...",
+    "segments": [...]
+  }
 }
 ```
 
-## Authentication Requirements
-
-```json
-{
-    "REQUIRED_CONFIG": {
-        "API_OR_JWT": "Token",
-        "client_id": "123",
-        "session_id": "session_id"
-    }
-}
+**Get Job Text Only**
+```bash
+curl http://localhost:8000/v1/v1/jobs/{job_id}/text
 ```
 
-## Audio Requirements
-
-```json
-{
-    "AUDIO_CONFIG": {
-        "language": "en",
-        "sample_rate": 16000,
-        "encoding": "PCM",
-        "channels": 1
-        "chunk size" : 512.
-        "audio_format": {
-            "accepted_types": ["raw", "wav", "ogg", "mp3"],
-            "streaming_chunk_format": "raw_pcm"
-        },
-        "streaming_config": {
-            "max_chunk_size_bytes": 8192, (need to verify)
-            "chunk_duration_ms": 100,(need to verify)
-            "continuous_streaming": true(need to verify)
-        }
-    }
-}
-    }
-}
+**Debug Job Info**
+```bash
+curl http://localhost:8000/v1/v1/jobs/{job_id}/debug
 ```
 
-## Configuration Options
+### Real-time Transcription (WebSocket)
 
-```json
-{
-    "core_settings": {
-        "model": "base",
-        "compute_type": "default",
-        "device": "cuda",
-        "gpu_device_index": 0,
-        "batch_size": 16,
-        "language": "en",
-        "initial_prompt": null
-    },
-    "audio_processing": {
-        "channels": 1,
-        "buffer_size": 512,
-        "sample_rate": 16000,
-        "handle_buffer_overflow": true,
-        "allowed_latency_limit": 200,
-        "input_device_index": null
-    },
-    "vad": {
-        "enabled": true,
-        "silero": {
-            "enabled": true,
-            "sensitivity": 0.4,
-            "use_onnx": false
-        },
-        "webrtc": {
-            "enabled": true,
-            "sensitivity": 3
-        },
-        "post_speech_silence": 0.6,
-        "min_speech_duration": 0.5
-    },
-    "features": {
-        "interim_results": true,
-        "speaker_diarization": false,
-        "sentiment_analysis": {
-            "enabled": false,
-            "granularity": "sentence",
-            "min_confidence": 0.6
-        },
-        "topic_detection": {
-            "enabled": false,
-            "min_confidence": 0.6
-        }
-    },
-    "formatting": {
-        "ensure_sentence_starting_uppercase": true,
-        "ensure_sentence_ends_with_period": true,
-        "print_transcription_time": false
-    }
-}
+```python
+import websockets
+import json
+
+async def transcribe_realtime():
+    async with websockets.connect("ws://localhost:8000/v1/transcribe") as ws:
+        # Configure session
+        await ws.send(json.dumps({
+            "type": "config",
+            "data": {
+                "model": "tiny",
+                "language": "en",
+                "enable_vad": true
+            }
+        }))
+        
+        # Send audio chunks
+        await ws.send(json.dumps({
+            "type": "audio",
+            "data": base64_audio_data
+        }))
+        
+        # Receive transcriptions
+        result = await ws.recv()
+        print(json.loads(result))
 ```
 
-## API Communication
 
-### Control Commands
+### Test WebSocket API
 
-```json
-{
-    "commands": {
-        "start_stream": {
-            "command": "start_stream",
-            "audio_start": "2024-03-20T10:30:35.123Z"
-        },
-        "stop_stream": {
-            "command": "stop_stream",
-            "audio_end": "2024-03-20T10:30:45.123Z"
-        },
-        "pause_stream": {
-            "command": "pause_stream"
-        },
-        "resume_stream": {
-            "command": "resume_stream"
-        }
-    }
-}
+**Option 1: WebSocket Test Frontend (Recommended)**
+```bash
+# Open the interactive test interface
+open frontend/index.html
 ```
 
-### Response Messages
+**Frontend Features:**
+- 🎤 **Real-time microphone input** with browser audio capture
+- 🔧 **Model selection** (tiny, base, small, medium, large) for both realtime and final transcription
+- 📊 **Latency metrics** showing model load time and audio processing latency
+- 📝 **Live transcript display** with real-time updates and final results
+- 🌐 **WebSocket connection management** with auto-reconnect capabilities
+- 💾 **Azure Files integration** showing storage session details
 
-#### Partial Results
+**Configuration for Different Environments:**
 
-```json
-{
-    "type": "partial_result",
-    "data": {
-        "text": "partial transcription",
-        "confidence": 0.85,
-        "timestamp": "2024-03-20T10:30:45.123Z",
-        "is_final": false,
-        "audio_start": "2024-03-20T10:30:35.123Z",
-        "audio_current": "2024-03-20T10:30:45.123Z",
-        "speaker": "speaker_1",
-        "wake_word_detected": "hey assistant"
-    }
-}
+**Local Development (Current Setup):**
+- WebSocket URL: `ws://localhost:8000/v1/transcribe`
+- Device: `cpu`
+- Compute Type: `float32`
+
+**Azure Container Apps Production:**
+To test with Azure, simply edit `frontend/script.js`:
+
+1. **Change the WebSocket URL** (line 2):
+   ```javascript
+   const WS_URL = "wss://your-app-name.azurecontainerapps.io/v1/transcribe";
+   ```
+
+2. **Update the device and compute_type** (around lines 82-83):
+   ```javascript
+   compute_type: "float16",  // GPU acceleration
+   device: "cuda",           // GPU device
+   ```
+
+**How to Test:**
+1. Ensure your API server is running (`python run_api.py` for local, or deployed to Azure)
+2. If testing Azure, edit `frontend/script.js` with your Azure URL and GPU settings (see above)
+3. Open `frontend/index.html` in your browser
+4. Click **"Connect"** to establish WebSocket connection
+5. Select your preferred models (start with "tiny" for fastest response)
+6. Click **"Start Recording"** and grant microphone permissions
+7. Speak into your microphone and watch real-time transcription
+8. Click **"Stop Recording"** to get final transcript with main model
+9. Click **"Get Final Transcript"** to retrieve complete session data
+
+**Option 2: Python WebSocket Client**
+```bash
+# Using the test client script
+python tests/test_websocket.py
 ```
 
-#### Final Results
+**Option 3: Manual WebSocket Testing**
+```python
+import websockets
+import json
+import asyncio
 
-```json
-{
-    "type": "final_result",
-    "data": {
-        "text": "final transcription",
-        "is_final": true,
-        "confidence": 0.95,
-        "audio": {
-            "start": "2024-03-20T10:30:35.123Z",
-            "end": "2024-03-20T10:30:45.123Z",
-            "duration": 10.5
-        },
-        "timestamp": "2024-03-20T10:30:45.123Z",
-        "speakers": {
-            "count": 2,
-            "details": [
-                {
-                    "id": "speaker_1",
-                    "speaking_time": 6.5,
-                    "segments": []
-                }
-            ]
-        },
-        "analysis": {
-            "sentiment": {
-                "overall": {
-                    "label": "positive",
-                    "score": 0.8
-                },
-                "by_sentence": [
-                    {
-                        "text": "This is great!",
-                        "sentiment": "positive",
-                        "score": 0.9
-                    }
-                ]
-            },
-            "topics": [
-                {
-                    "topic": "technology",
-                    "confidence": 0.9,
-                    "mentions": []
-                }
-            ]
-        },
-        "filters": {
-            "profanity": {
-                "detected": false,
-                "filtered_words": []
+async def test_websocket():
+    uri = "ws://localhost:8000/v1/transcribe"
+    async with websockets.connect(uri) as websocket:
+        # Connect with configuration
+        config = {
+            "command": "connect",
+            "config": {
+                "model": "tiny",
+                "language": "en",
+                "enable_realtime_transcription": True
             }
         }
-    }
-}
+        await websocket.send(json.dumps(config))
+        
+        # Listen for responses
+        async for message in websocket:
+            print(f"Received: {message}")
+
+asyncio.run(test_websocket())
 ```
 
+## ☁️ Azure Deployment
 
-#### To Do (Storage of Data)
+### Prerequisites
+- Azure CLI installed and logged in
+- Azure Container Registry
+- Azure Container Apps environment
+
+### Deploy to Azure Container Apps
+
+1. **Build and Push Docker Image**
+   ```bash
+   # Build image
+   docker build -t cloudstt:latest .
+   
+   # Tag for ACR
+   docker tag cloudstt:latest yourregistry.azurecr.io/cloudstt:latest
+   
+   # Push to ACR
+   docker push yourregistry.azurecr.io/cloudstt:latest
+   ```
+
+2. **Deploy with Azure Files Storage**
+   ```bash
+   cd azure-deployment
+   
+   # Setup Azure Files for persistent storage
+   ./setup_azure_files.sh
+   
+   # Deploy the container app
+   ./deploy_fixed_storage.sh
+   ```
+
+3. **Test Azure Deployment**
+   ```bash
+   # Get the app URL
+   APP_URL=$(az containerapp show --name cloudstt-app --resource-group your-rg --query properties.configuration.ingress.fqdn -o tsv)
+   
+   # Test batch endpoint
+   curl -X POST https://$APP_URL/v1/transcribe \
+     -F "audio_file=@test.mp3" \
+     -F 'request={"model":"base"}'
+   
+   # For WebSocket testing: Edit frontend/script.js with your Azure URL
+   # Change: const WS_URL = "wss://your-app.azurecontainerapps.io/v1/transcribe"
+   # Change: compute_type: "float16", device: "cuda" 
+   open frontend/index.html
+   ```
+
+## 🔧 Configuration
+
+### Environment Variables
+```bash
+# API Configuration
+PORT=8000
+WORKERS=4
+LOG_LEVEL=info
+
+# Model Configuration
+DEFAULT_MODEL=base
+DEFAULT_COMPUTE_TYPE=float16
+
+# Azure Storage (for Container Apps)
+AZURE_STORAGE_CONNECTION_STRING=your_connection_string
+AZURE_SHARE_NAME=cloudstt-storage
+```
+
+### Model Options
+| Model | Size | Speed | Accuracy | Use Case |
+|-------|------|-------|----------|----------|
+| tiny | 39M | Fastest | Good | Real-time, low-latency |
+| base | 74M | Fast | Better | Balanced performance |
+| small | 244M | Medium | Good | General purpose |
+| medium | 769M | Slow | Very Good | High accuracy |
+| large | 1550M | Slowest | Best | Maximum accuracy |
+
+## 📁 Project Structure
+```

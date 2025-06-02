@@ -2,7 +2,7 @@ fastapi==0.115.0
 uvicorn>=0.21.1
 python-dotenv==1.0.0
 azure-storage-blob>=12.22.0
-RealtimeSTT==0.3.95
+RealtimeSTT>=0.3.104
 
 
 pydantic
@@ -16,11 +16,11 @@ webrtcvad-wheels==2.0.14
 halo==0.0.31
 torch
 torchaudio
-scipy==1.15.1
 openwakeword>=0.4.0
-websockets==14.2
+websockets==15.0.1
 websocket-client==1.8.0
 numpy<2.0.0
 soundfile==0.13.1
+pydub>=0.25.1
 
 

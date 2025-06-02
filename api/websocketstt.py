@@ -134,7 +134,7 @@ async def transcribe_stream(websocket: WebSocket):
                 "language": model_config.get("language", "auto"),
                 "compute_type": model_config.get("compute_type", "float16"),
                 "device": model_config.get("device", "cuda"),
-                "use_microphone": False,
+                "use_microphone": True,
                 "debug_mode": True,
                 # "input_device_index": model_config.get("input_device_index", 0) # No longer needed here for this mode
             }
@@ -201,13 +201,40 @@ async def transcribe_stream(websocket: WebSocket):
             "on_wakeword_detected": callback_wrapper("wakeword_detected", session_id)
         }
         
+        # Create enhanced storage session
+        logger.info(f"🗂️ Creating Azure Files storage session for {session_id}")
+        storage_session = transcription_service.realtime_storage.create_session(session_id, recorder_config)
+        logger.info(f"✅ Azure Files storage session created successfully for {session_id}")
+        
+        # Create enhanced callback functions that also save to storage
+        enhanced_callbacks = {
+            "on_recording_start": callback_wrapper("recording_start", session_id),
+            "on_recording_stop": callback_wrapper("recording_stop", session_id),
+            "on_transcription_start": callback_wrapper("transcription_start", session_id),
+            "on_realtime_transcription_update": lambda text: [
+                callback_wrapper("realtime_update", session_id, "text")(text),
+                logger.debug(f"⏳ Realtime update for {session_id}: '{text[:50]}...'") if text else None,
+                transcription_service.realtime_storage.add_realtime_transcript(session_id, text, is_stabilized=False) if text else None
+            ],
+            "on_realtime_transcription_stabilized": lambda text: [
+                callback_wrapper("realtime_stabilized", session_id, "text")(text),
+                logger.info(f"🔒 Realtime stabilized for {session_id}: '{text}'") if text else logger.info(f"🔒 Empty stabilized transcript for {session_id}"),
+                logger.info(f"💾 Saving stabilized transcript to Azure Files for {session_id}") if text else None,
+                transcription_service.realtime_storage.add_realtime_transcript(session_id, text, is_stabilized=True) if text else None
+            ],
+            "on_vad_detect_start": callback_wrapper("voice_activity_start", session_id),
+            "on_vad_detect_stop": callback_wrapper("voice_activity_stop", session_id),
+            "on_wakeword_detected": callback_wrapper("wakeword_detected", session_id)
+        }
+        
         # Create recorder using the unified service
-        session = transcription_service.create_audio_recorder(recorder_config, session_id, callback_functions)
+        session = transcription_service.create_audio_recorder(recorder_config, session_id, enhanced_callbacks)
         
         # Store session
         transcription_service.active_sessions[session_id] = {
             "recorder": session,
-            "audio_url": None
+            "audio_url": None,
+            "storage_session": storage_session
         }
         
         # Send successful connection response
@@ -264,35 +291,102 @@ async def transcribe_stream(websocket: WebSocket):
                 })
                 
             elif command == "get_transcript":
-                # Get final transcript from current audio
-                result = session.text()
+                # Get final transcript from current audio (main model processing)
+                logger.info(f"🎯 GET_TRANSCRIPT command received for session {session_id}")
                 
-                # Get audio URL if available
-                audio_url = None
-                if session_id in transcription_service.active_sessions:
-                    audio_url = transcription_service.active_sessions[session_id].get("audio_url")
+                try:
+                    result = session.text()
+                    logger.info(f"📝 Got transcript from session: '{result}' ({len(result)} chars)")
+                    
+                    # Get additional information
+                    detected_language = getattr(session, 'detected_language', None)
+                    language_probability = getattr(session, 'detected_language_probability', None)
+                    logger.info(f"🌍 Language detection: {detected_language} ({language_probability})")
+                    
+                    # Check if session exists in realtime storage
+                    if session_id in transcription_service.realtime_storage.active_sessions:
+                        logger.info(f"✅ Session {session_id} found in realtime storage")
+                        storage_session = transcription_service.realtime_storage.active_sessions[session_id]
+                        logger.info(f"📊 Current session metrics: {storage_session.metrics.total_chunks_received} chunks, "
+                                   f"{storage_session.metrics.realtime_transcripts_count} realtime transcripts")
+                    else:
+                        logger.error(f"❌ Session {session_id} NOT found in realtime storage!")
+                        logger.info(f"🔍 Active sessions: {list(transcription_service.realtime_storage.active_sessions.keys())}")
+                    
+                    # Finalize the storage session with main model results
+                    logger.info(f"🔄 Finalizing Azure Files storage session for {session_id}")
+                    finalized_session = transcription_service.realtime_storage.finalize_session(
+                        session_id=session_id,
+                        final_transcript=result,
+                        segments=None,  # Could be enhanced to get segments if available
+                        detected_language=detected_language,
+                        language_probability=language_probability
+                    )
+                    
+                    if finalized_session:
+                        logger.info(f"✅ Azure Files storage session finalized successfully for {session_id}")
+                        logger.info(f"📊 Final session metrics: {finalized_session.metrics.total_audio_duration:.2f}s audio, "
+                                   f"{finalized_session.metrics.realtime_transcripts_count} realtime transcripts")
+                        logger.info(f"🎵 Audio URL: {finalized_session.audio_url}")
+                    else:
+                        logger.error(f"❌ Failed to finalize Azure Files storage session for {session_id}")
+                    
+                    # Get audio URL from finalized session
+                    audio_url = finalized_session.audio_url if finalized_session else None
+                    
+                    # Prepare response data
+                    response_data = {
+                        "text": result,
+                        "language": detected_language,
+                        "language_probability": language_probability
+                    }
                 
-                response_data = {
-                    "text": result,
-                    "language": session.detected_language,
-                    "language_probability": session.detected_language_probability
-                }
-                
-                # Add audio URL to response if available
-                if audio_url:
-                    response_data["audio_url"] = audio_url
-                
-                await websocket.send_json({
-                    "event": "transcript",
-                    "session_id": session_id,
-                    "data": response_data
-                })
+                    # Add comprehensive session data if available
+                    if finalized_session:
+                        session_summary = {
+                            "total_duration": finalized_session.metrics.total_audio_duration,
+                            "realtime_transcripts_count": finalized_session.metrics.realtime_transcripts_count,
+                            "total_chunks": finalized_session.metrics.total_chunks_received,
+                            "session_id": session_id
+                        }
+                        response_data.update({
+                            "audio_url": audio_url,
+                            "session_summary": session_summary
+                        })
+                        logger.info(f"📤 Sending session summary: {session_summary}")
+                    else:
+                        logger.warning(f"⚠️ No session summary available - finalization failed")
+                    
+                    logger.info(f"📤 Sending transcript response with {len(response_data)} fields")
+                    await websocket.send_json({
+                        "event": "transcript",
+                        "session_id": session_id,
+                        "data": response_data
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error in get_transcript for {session_id}: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    await websocket.send_json({
+                        "event": "error",
+                        "session_id": session_id,
+                        "data": {"message": f"Error getting transcript: {str(e)}"}
+                    })
                 
             elif command == "send_audio":
                 # Process audio data sent by the client
                 audio_data = base64.b64decode(message["audio"])
                 sample_rate = message.get("sample_rate", 16000)
+                
+                # Feed audio to the recorder
                 session.feed_audio(audio_data, sample_rate)
+                
+                # Also save audio chunk to storage
+                chunk_success = transcription_service.realtime_storage.add_audio_chunk(session_id, audio_data, sample_rate)
+                if chunk_success:
+                    logger.debug(f"🎤 Audio chunk saved to Azure Files for session {session_id}: {len(audio_data)} bytes")
+                else:
+                    logger.error(f"❌ Failed to save audio chunk to Azure Files for session {session_id}")
                 
             elif command == "wakeup":
                 # Manually trigger wake word detection
@@ -338,9 +432,22 @@ async def transcribe_stream(websocket: WebSocket):
         # Clean up resources
         if session:
             session.shutdown()
+        
+        # Clean up storage session (preserve transcripts and audio by default)
+        transcription_service.realtime_storage.cleanup_session(
+            session_id, 
+            preserve_audio=True, 
+            preserve_transcripts=True
+        )
+        
         # Remove session from active sessions
         if session_id in transcription_service.active_sessions:
             del transcription_service.active_sessions[session_id]
+        
+        # Cancel message processor task
+        if message_processor_task:
+            message_processor_task.cancel()
+            
         logger.info(f"Session cleaned up: {session_id}")
 
 print(f"Available CPU cores: {multiprocessing.cpu_count()}")

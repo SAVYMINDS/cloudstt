@@ -1,0 +1,33 @@
+apiVersion: Microsoft.App/containerApps
+name: cloudstt-api
+location: eastus2
+properties:
+  managedEnvironmentId: /subscriptions/93044a08-5661-4f1b-b424-5eafe066a9d1/resourceGroups/mvpv1/providers/Microsoft.App/managedEnvironments/cloudstt-env
+  configuration:
+    activeRevisionsMode: Single
+    ingress:
+      external: true
+      targetPort: 8000
+      transport: Auto
+      corsPolicy:
+        allowedOrigins:
+          - "*"
+      sessionAffinity: true
+    registries:
+      - server: cloudsttacr.azurecr.io
+        username: cloudsttacr
+        passwordSecretRef: acr-password
+    secrets:
+      - name: acr-password
+        value: "0N45EBIBKhE5T8kjdRwBWB24IqasUb6WA7wIO+eYjK+ACRDzFJQk"
+  template:
+    containers:
+      - name: cloudstt-api
+        image: cloudsttacr.azurecr.io/cloudstt:v1
+        resources:
+          cpu: 2
+          memory: "4Gi"
+    scale:
+      minReplicas: 1
+      maxReplicas: 3
+type: Microsoft.App/containerApps 

@@ -1,0 +1,19 @@
+apiVersion: Microsoft.App/containerApps
+name: cloudstt-api-gpu
+properties:
+  template:
+    volumes:
+      - name: storage
+        storageType: AzureFile
+        storageName: cloudsttstorage
+        accessMode: ReadWrite
+        shareName: cloudsttshare
+    containers:
+      - name: cloudstt-api-gpu
+        image: cloudsttacr.azurecr.io/cloudstt:v9-gpu
+        resources:
+          cpu: 2
+          memory: 8Gi
+        volumeMounts:
+          - volumeName: storage
+            mountPath: /app/storage 

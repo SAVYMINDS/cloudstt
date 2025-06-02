@@ -1,0 +1,61 @@
+{
+  "properties": {
+    "template": {
+      "containers": [
+        {
+          "name": "cloudstt-api-gpu",
+          "image": "cloudsttacr.azurecr.io/cloudstt-api-gpu:latest",
+          "env": [
+            {
+              "name": "AZURE_FILES_DEBUG",
+              "value": "true"
+            },
+            {
+              "name": "PRESERVE_INPUT_FILES", 
+              "value": "true"
+            },
+            {
+              "name": "PRESERVE_OUTPUT_FILES",
+              "value": "true"
+            },
+            {
+              "name": "AZURE_FILES_MOUNT_PATH",
+              "value": "/app/azurestorage"
+            }
+          ],
+          "resources": {
+            "cpu": 2.0,
+            "memory": "8Gi"
+          },
+          "volumeMounts": [
+            {
+              "volumeName": "storage",
+              "mountPath": "/app/azurestorage"
+            }
+          ]
+        }
+      ],
+      "volumes": [
+        {
+          "name": "storage",
+          "storageName": "cloudsttstorage",
+          "storageType": "AzureFile"
+        }
+      ],
+      "scale": {
+        "minReplicas": 1,
+        "maxReplicas": 3,
+        "rules": [
+          {
+            "name": "http-scaler",
+            "http": {
+              "metadata": {
+                "concurrentRequests": "2"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+} 

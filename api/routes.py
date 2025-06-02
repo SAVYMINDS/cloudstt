@@ -28,7 +28,7 @@ from .schemas import (
 )
 
 # Import Azure storage
-from storage.azure_storage import AzureBlobStorage
+from storage.azure_storage import AzureFilesStorage
 
 # Import unified service from main
 from .main import transcription_service, job_storage
@@ -90,11 +90,11 @@ def split_audio_file(audio_data: bytes, job_id: str, file_ext: str, chunk_size_m
         # Create storage client
         storage_client = transcription_service.storage_client
         
-        # Upload to Azure
+        # Upload to Azure Files (batch processing)
         chunk_blob_name = f"job-{job_id}/chunks/chunk_{i+1}{file_ext}"
         with open(temp_path, 'rb') as f:
             storage_client.upload_file(
-                container_name="audio-processing",
+                container_name=storage_client.BATCH_PROCESSING,
                 blob_name=chunk_blob_name,
                 data=f,
                 metadata={
@@ -109,7 +109,7 @@ def split_audio_file(audio_data: bytes, job_id: str, file_ext: str, chunk_size_m
             "chunk_number": i+1,
             "total_chunks": num_chunks,
             "temp_path": temp_path,
-            "blob_path": f"audio-processing/{chunk_blob_name}",
+            "blob_path": f"{storage_client.BATCH_PROCESSING}/{chunk_blob_name}",
             "start_time": start_ms,
             "end_time": end_ms
         })
@@ -122,9 +122,7 @@ def merge_chunk_results(job_id: str):
     """Delegate to service method"""
     return transcription_service.merge_chunk_results(job_id)
 
-def cleanup_job_files(job_id: str):
-    """Delegate to service method"""
-    return transcription_service.cleanup_job_files(job_id)
+# Removed duplicate cleanup_job_files function - using the one at line 505 instead
 
 def process_audio(job_id: str, audio_path: str, model_name: str, is_chunk: bool = False, chunk_info: Dict = None, language: Optional[str] = None, timeout: int = 600):
     """Process audio files with parallel processing support."""
@@ -162,7 +160,7 @@ def process_audio(job_id: str, audio_path: str, model_name: str, is_chunk: bool 
                 if not result_queue.empty():
                     result_data = result_queue.get_nowait()
                     if result_data.get("success", False):
-                        # Save results to Azure only for chunks, not for single files
+                        # Save results to Azure Files only for chunks, not for single files
                         storage_client = transcription_service.storage_client
                         if is_chunk:
                             result_blob_name = f"job-{job_id}/chunks/chunk_{chunk_info['chunk_number']}_result.json"
@@ -173,9 +171,9 @@ def process_audio(job_id: str, audio_path: str, model_name: str, is_chunk: bool 
                                 "total_chunks": chunk_info["total_chunks"]
                             })
                             
-                            # Save to Azure (only for chunks)
+                            # Save to Azure Files (only for chunks)
                             storage_client.save_json(
-                                container_name="audio-output",
+                                container_name=storage_client.BATCH_OUTPUT,
                                 blob_name=result_blob_name,
                                 data=result_data["data"]
                             )
@@ -321,7 +319,7 @@ def merge_chunk_results(job_id: str) -> Optional[Dict[str, Any]]:
         
         # List all results in the job's chunks folder
         result_files = storage_client.list_blobs(
-            container_name="audio-output",
+            container_name=storage_client.BATCH_OUTPUT,
             prefix=f"job-{job_id}/chunks/"
         )
         
@@ -334,7 +332,7 @@ def merge_chunk_results(job_id: str) -> Optional[Dict[str, Any]]:
         
         for result_file in chunk_result_files:
             chunk_data = storage_client.load_json(
-                container_name="audio-output",
+                container_name=storage_client.BATCH_OUTPUT,
                 blob_name=result_file
             )
             if chunk_data:
@@ -483,7 +481,7 @@ def merge_chunk_results(job_id: str) -> Optional[Dict[str, Any]]:
         # Save final result
         final_result_path = f"job-{job_id}/final_result.json"
         storage_client.save_json(
-            container_name="audio-output",
+            container_name=storage_client.BATCH_OUTPUT,
             blob_name=final_result_path,
             data=merged_result
         )
@@ -503,9 +501,9 @@ def merge_chunk_results(job_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 def cleanup_job_files(job_id: str):
-    """Clean up temporary files and intermediate results."""
+    """Clean up only temporary local files, preserving all Azure Files data."""
     try:
-        # Clean up temp files
+        # Clean up temp files (local only)
         if job_id in job_storage:
             job_data = job_storage[job_id]
             if "metadata" in job_data:
@@ -514,36 +512,19 @@ def cleanup_job_files(job_id: str):
                     temp_path = job_data["metadata"]["temp_path"]
                     if os.path.exists(temp_path):
                         os.unlink(temp_path)
+                        logger.info(f"Removed temporary file: {temp_path}")
                 
                 # Clean up chunk files
                 if "temp_paths" in job_data["metadata"]:
                     for temp_path in job_data["metadata"]["temp_paths"]:
                         if os.path.exists(temp_path):
                             os.unlink(temp_path)
+                            logger.info(f"Removed temporary chunk file: {temp_path}")
         
-        # Clean up Azure blobs
-        storage_client = transcription_service.storage_client
-        
-        # Clean up processing blobs
-        proc_blobs = storage_client.list_blobs(
-            container_name="audio-processing",
-            prefix=f"job-{job_id}/"
-        )
-        for blob in proc_blobs:
-            storage_client.delete_blob("audio-processing", blob)
-        
-        # Clean up ONLY the chunks in output container, preserving final_result.json
-        output_blobs = storage_client.list_blobs(
-            container_name="audio-output",
-            prefix=f"job-{job_id}/chunks/"
-        )
-        for blob in output_blobs:
-            # Make sure we're not accidentally deleting the final result
-            if "final_result.json" not in blob:
-                storage_client.delete_blob("audio-output", blob)
-                logger.info(f"Deleted chunk file: {blob}")
-            else:
-                logger.warning(f"Skipped deletion of final result file: {blob}")
+        # PRESERVE ALL AZURE FILES DATA
+        # No longer deleting files from Azure Files storage
+        # All processing files and output files are preserved for data retention
+        logger.info(f"Preserved all Azure Files data for job {job_id} - no files deleted from storage")
             
     except Exception as e:
         logger.error(f"Error cleaning up job files for job {job_id}: {str(e)}")
@@ -746,22 +727,22 @@ async def transcribe_uploaded_audio(
             with open(temp_path, "wb") as f:
                 f.write(content)
             
-            # Upload to Azure Blob Storage
+            # Upload to Azure Files Storage (batch processing)
             blob_name = f"job-{job_id}/audio{file_ext}"
             with open(temp_path, 'rb') as file_data:
                 upload_success = storage_client.upload_file(
-                    container_name="audio-processing",
+                    container_name=storage_client.BATCH_PROCESSING,
                     blob_name=blob_name,
                     data=file_data
                 )
             
             if not upload_success:
-                raise Exception(f"Failed to upload file to Azure Blob Storage")
+                raise Exception(f"Failed to upload file to Azure Files Storage")
             
             # Update job metadata
             job_metadata.update({
                 "temp_path": temp_path,
-                "azure_path": f"audio-processing/{blob_name}"
+                "azure_path": f"{storage_client.BATCH_PROCESSING}/{blob_name}"
             })
             
             # Create job record
@@ -835,10 +816,10 @@ async def transcribe_uploaded_audio(
                                 result["num_speakers_detected"] = len(speakers)
                                 logger.info(f"Updated num_speakers_detected from segments: {result['num_speakers_detected']}")
                     
-                    # Save the result to Azure for consistency with multi-chunk files
+                    # Save the result to Azure Files for consistency with multi-chunk files
                     storage_client = transcription_service.storage_client
                     storage_client.save_json(
-                        container_name="audio-output",
+                        container_name=storage_client.BATCH_OUTPUT,
                         blob_name=f"job-{job_id}/final_result.json",
                         data=result
                     )
@@ -971,18 +952,18 @@ async def get_job_text(job_id: str):
         job_data = job_storage[job_id]
         status = job_data.get("metadata", {}).get("status", "unknown")
         
-        # Check Azure for results even if status isn't completed
+        # Check Azure Files for results even if status isn't completed
         if status == "error" and "timeout" in job_data.get("metadata", {}).get("error", ""):
             storage_client = transcription_service.storage_client
             # Try to find the result file
             result_files = storage_client.list_blobs(
-                container_name="audio-output",
+                container_name=storage_client.BATCH_OUTPUT,
                 prefix=f"job-{job_id}"
             )
             for result_file in result_files:
                 if result_file.endswith(".json"):
                     results = storage_client.load_json(
-                        container_name="audio-output",
+                        container_name=storage_client.BATCH_OUTPUT,
                         blob_name=result_file
                     )
                     if results and "transcript" in results:

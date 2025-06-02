@@ -1,0 +1,54 @@
+location: West US 3
+name: cloudstt-api-gpu
+properties:
+  configuration:
+    activeRevisionsMode: Single
+    ingress:
+      external: true
+      targetPort: 8000
+      corsPolicy:
+        allowedOrigins:
+          - "*"
+        allowedHeaders:
+          - "*"
+    registries:
+      - server: cloudsttacr.azurecr.io
+        username: cloudsttacr
+        passwordSecretRef: cloudsttacrazurecrio-cloudsttacr
+    secrets:
+      - name: cloudsttacrazurecrio-cloudsttacr
+      - name: azurestoragekey
+  template:
+    containers:
+      - image: cloudsttacr.azurecr.io/cloudstt-api-gpu:latest
+        name: cloudstt-api-gpu
+        env:
+          - name: AZURE_FILES_DEBUG
+            value: "true"
+          - name: PRESERVE_INPUT_FILES
+            value: "true"
+          - name: PRESERVE_OUTPUT_FILES
+            value: "true"
+          - name: AZURE_FILES_MOUNT_PATH
+            value: "/app/azurestorage"
+        resources:
+          cpu: 2.0
+          memory: 8Gi
+        volumeMounts:
+          - volumeName: storage
+            mountPath: /app/azurestorage
+    scale:
+      minReplicas: 1
+      maxReplicas: 3
+      rules:
+        - name: http-scaler
+          http:
+            metadata:
+              concurrentRequests: "2"
+    volumes:
+      - name: storage
+        storageName: cloudsttstorage
+        storageType: AzureFile
+  workloadProfileName: GPU-T4
+resourceGroup: mvpv1
+type: Microsoft.App/containerApps 

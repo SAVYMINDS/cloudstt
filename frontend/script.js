@@ -1,5 +1,11 @@
 // WebSocket Server URL
-const WS_URL = "wss://cloudstt-api.lemonforest-4eb4d55a.eastus2.azurecontainerapps.io/v1/transcribe";
+const WS_URL = "ws://localhost:8000/v1/transcribe";
+
+// Configuration
+const CONFIG = {
+    connectionTimeout: 60000,  // 1 minute timeout for connection
+    modelLoadTimeout: 120000   // 2 minutes timeout for model loading
+};
 
 // DOM Elements
 const connectButton = document.getElementById('connectButton');
@@ -9,16 +15,27 @@ const statusMessage = document.getElementById('statusMessage');
 const serverMessages = document.getElementById('serverMessages');
 const realtimeTranscript = document.getElementById('realtimeTranscript');
 const finalTranscript = document.getElementById('finalTranscript');
+const mainModelSelect = document.getElementById('mainModel');
+const realtimeModelSelect = document.getElementById('realtimeModel');
 
 // WebSocket object
 let websocket = null;
 
 // Audio context and processor
 let audioContext = null;
-let scriptProcessor = null;
 let mediaStreamSource = null;
-const BUFFER_SIZE = 4096;
 const TARGET_SAMPLE_RATE = 16000;
+
+// Latency measurement variables
+let connectionStartTime;
+let modelReadyTime;
+let firstAudioChunkTime;
+let firstTranscriptionTime;
+let isMeasuringFirstChunk = true;
+let latencyStats = {
+    modelLoadTimes: [],
+    processingLatencies: []
+};
 
 // Event Listeners
 connectButton.addEventListener('click', () => {
@@ -27,36 +44,83 @@ connectButton.addEventListener('click', () => {
         return;
     }
 
+    // Reset latency measurement for this connection
+    connectionStartTime = performance.now();
+    firstTranscriptionTime = null;
+    isMeasuringFirstChunk = true;
+    
     updateStatus("Connecting...");
     logServerMessage(`Attempting to connect to ${WS_URL}`);
     connectButton.disabled = true;
 
+    // Set connection timeout
+    const connectionTimeoutId = setTimeout(() => {
+        if (websocket && websocket.readyState === WebSocket.CONNECTING) {
+            logServerMessage("Connection timeout - WebSocket connection taking too long. Please try again.");
+            websocket.close();
+            connectButton.disabled = false;
+            updateStatus("Connection Timeout");
+        }
+    }, CONFIG.connectionTimeout);
+
     websocket = new WebSocket(WS_URL);
 
     websocket.onopen = (event) => {
+        // Clear connection timeout
+        clearTimeout(connectionTimeoutId);
+        
         updateStatus("Connected");
         logServerMessage("Successfully connected to WebSocket server.");
         startButton.disabled = false;
-        stopButton.disabled = true; // Should be disabled until recording starts
-        // Send the initial 'connect' command to the server
+        stopButton.disabled = true;
+        
+        // Get selected model configurations
+        const mainModel = mainModelSelect.value;
+        const realtimeModel = realtimeModelSelect.value;
+        
+        // Special handling for larger models
+        if (mainModel.includes("medium") || mainModel.includes("large") || 
+            realtimeModel.includes("medium") || realtimeModel.includes("large")) {
+            logServerMessage("You've selected a larger model (medium/large). Loading may take longer and might require more GPU memory.");
+        }
+        
+        // Set model load timeout (for waiting for 'connected' event)
+        const modelLoadTimeoutId = setTimeout(() => {
+            if (!modelReadyTime) {
+                logServerMessage("Model load timeout - The server is taking too long to load the model. Consider using a smaller model or check server resources.");
+                updateStatus("Model Load Timeout");
+            }
+        }, CONFIG.modelLoadTimeout);
+        
+        // Send the initial 'connect' command to the server with enhanced model configurations
         const connectPayload = {
             command: "connect",
             config: {
-                mode: "realtime",
-                model: {
-                    name: "tiny", // Or make this configurable via UI later
-                    language: "en", // Or make this configurable
-                    compute_type: "float32"
-                },
-                realtime_config: {
-                    vad: {
-                        silero_sensitivity: 0.4
-                    }
-                }
+                // Enhanced configuration for realtime storage testing
+                realtime_model_type: realtimeModel,
+                model: mainModel,
+                    language: "en",
+                compute_type: "float32",
+                device: "cpu",
+                
+                // Realtime settings
+                enable_realtime_transcription: true,
+                use_main_model_for_realtime: false,
+                realtime_processing_pause: 0.2,
+                
+                // VAD settings
+                silero_sensitivity: 0.4,
+                webrtc_sensitivity: 3,
+                post_speech_silence_duration: 0.6,
+                min_length_of_recording: 0.5,
+                
+                // Text formatting
+                ensure_sentence_starting_uppercase: true,
+                ensure_sentence_ends_with_period: true
             }
         };
         websocket.send(JSON.stringify(connectPayload));
-        logServerMessage("Sent 'connect' command to server.");
+        logServerMessage("Sent 'connect' command to server with model configurations.");
     };
 
     websocket.onmessage = (event) => {
@@ -67,23 +131,107 @@ connectButton.addEventListener('click', () => {
             // Handle different event types from server
             if (messageData.event === "connected") {
                 // Server confirmed connection and initialization
-                logServerMessage(`Session ID: ${messageData.session_id}`);
+                logServerMessage(`🎯 Session ID: ${messageData.session_id}`);
+                logServerMessage(`🤖 Realtime Model: ${realtimeModelSelect.value}`);
+                logServerMessage(`🧠 Main Model: ${mainModelSelect.value}`);
+                logServerMessage(`🗂️ Azure Files Storage: Enabled and ready`);
+                
+                // Calculate and log model loading time
+                modelReadyTime = performance.now();
+                const modelLoadTimeMs = modelReadyTime - connectionStartTime;
+                logServerMessage(`⏱️ LATENCY METRIC - Model Load Time: ${modelLoadTimeMs.toFixed(2)} ms`);
+                
+                // Store for statistics
+                latencyStats.modelLoadTimes.push(modelLoadTimeMs);
+                console.log("Model loading times:", latencyStats.modelLoadTimes);
+                
+                // Update the UI display
+                updateLatencyMetricsDisplay();
+
+                // Send start_listening command after connection is established
+                const startListeningPayload = {
+                    command: "start_listening"
+                };
+                websocket.send(JSON.stringify(startListeningPayload));
+                logServerMessage("📡 Sent 'start_listening' command to server.");
+                
             } else if (messageData.event === "listening_started") {
                 // Server is ready for audio
                 logServerMessage("Server confirmed: Listening started.");
                 // UI updates for recording state will be handled by startButton logic
             } else if (messageData.event === "realtime_update" || messageData.event === "realtime_stabilized") {
+                // Measure time to first transcription with actual text
+                if (messageData.data && messageData.data.text && 
+                    messageData.data.text.trim() !== "" && 
+                    firstAudioChunkTime && 
+                    !firstTranscriptionTime) {
+                    
+                    firstTranscriptionTime = performance.now();
+                    const processingLatencyMs = firstTranscriptionTime - firstAudioChunkTime;
+                    logServerMessage(`LATENCY METRIC - Audio Processing Latency: ${processingLatencyMs.toFixed(2)} ms`);
+                    
+                    // Store for statistics
+                    latencyStats.processingLatencies.push(processingLatencyMs);
+                    console.log("Processing latencies:", latencyStats.processingLatencies);
+                    
+                    // Update the UI display
+                    updateLatencyMetricsDisplay();
+                }
+                
                 if (messageData.data && messageData.data.text) {
-                    // For simplicity, we'll just replace the content. 
-                    // A more sophisticated UI might append or manage segments.
-                    realtimeTranscript.textContent = messageData.data.text;
+                    // Split text into sentences and join with newlines
+                    const text = messageData.data.text;
+                    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+                    realtimeTranscript.textContent = sentences.join('\n');
+                    
+                    // Enhanced logging for realtime transcripts
+                    const isStabilized = messageData.event === "realtime_stabilized";
+                    const status = isStabilized ? "🔒 STABILIZED" : "⏳ UPDATING";
+                    const timestamp = new Date().toLocaleTimeString();
+                    
+                    logServerMessage(`${status} [${timestamp}]: "${text}"`);
+                    
+                    if (isStabilized) {
+                        logServerMessage(`💾 Realtime transcript saved to Azure Files storage`);
+                    }
                 }
             } else if (messageData.event === "transcript") {
                 if (messageData.data && messageData.data.text) {
-                    setFinalTranscript(messageData.data.text);
+                    // Split final transcript into sentences as well
+                    const text = messageData.data.text;
+                    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+                    setFinalTranscript(sentences.join('\n'));
+                    
+                    // Log enhanced storage information
+                    logServerMessage("🎉 FINAL TRANSCRIPT RECEIVED!");
+                    logServerMessage(`📝 Main Model Transcript: "${text}"`);
+                    
+                    if (messageData.data.language) {
+                        logServerMessage(`🌍 Detected Language: ${messageData.data.language} (${messageData.data.language_probability || 'N/A'})`);
+                    }
+                    
+                    if (messageData.data.audio_url) {
+                        logServerMessage(`🎵 Audio URL: ${messageData.data.audio_url}`);
+                    }
+                    
+                    if (messageData.data.session_summary) {
+                        const summary = messageData.data.session_summary;
+                        logServerMessage(`📊 SESSION SUMMARY:`);
+                        logServerMessage(`   - Session ID: ${summary.session_id}`);
+                        logServerMessage(`   - Total Duration: ${summary.total_duration}s`);
+                        logServerMessage(`   - Audio Chunks: ${summary.total_chunks}`);
+                        logServerMessage(`   - Realtime Transcripts: ${summary.realtime_transcripts_count}`);
+                        logServerMessage(`✅ Azure Files Storage: Session data saved successfully!`);
+                    }
                 }
             } else if (messageData.event === "error") {
-                logServerMessage(`Server Error: ${messageData.data ? messageData.data.message : 'Unknown error'}`);
+                const errorMsg = messageData.data ? messageData.data.message : 'Unknown error';
+                logServerMessage(`Server Error: ${errorMsg}`);
+                
+                // Special handling for out-of-memory errors
+                if (errorMsg.includes("memory") || errorMsg.includes("OOM") || errorMsg.includes("resource")) {
+                    logServerMessage("It looks like the server is running out of memory. Try using a smaller model like 'tiny' or 'base'.");
+                }
             }
             // Add more event handlers as needed (e.g., for recording_start, voice_activity_start etc.)
 
@@ -94,6 +242,9 @@ connectButton.addEventListener('click', () => {
     };
 
     websocket.onerror = (error) => {
+        // Clear connection timeout
+        clearTimeout(connectionTimeoutId);
+        
         updateStatus("Connection Error");
         logServerMessage(`WebSocket Error: ${error.message || 'An unknown error occurred.'}`);
         console.error("WebSocket Error:", error);
@@ -103,8 +254,20 @@ connectButton.addEventListener('click', () => {
     };
 
     websocket.onclose = (event) => {
+        // Clear connection timeout
+        clearTimeout(connectionTimeoutId);
+        
         updateStatus("Disconnected");
         logServerMessage(`WebSocket disconnected. Code: ${event.code}, Reason: ${event.reason || 'No reason specified'}`);
+        
+        // Interpret common WebSocket close codes
+        if (event.code === 1006) {
+            logServerMessage("The connection was closed abnormally. This may be due to server overload, network issues, or insufficient resources for the selected model.");
+            logServerMessage("Try using a smaller model like 'tiny' or 'base', or check your network connection.");
+        } else if (event.code === 1011) {
+            logServerMessage("The server encountered an unexpected condition that prevented it from fulfilling the request. This might be due to model loading failure or memory issues.");
+        }
+        
         connectButton.disabled = false;
         startButton.disabled = true;
         stopButton.disabled = true;
@@ -114,7 +277,6 @@ connectButton.addEventListener('click', () => {
             audioContext.close();
         }
         audioContext = null;
-        scriptProcessor = null;
         mediaStreamSource = null;
     };
 });
@@ -130,143 +292,148 @@ startButton.addEventListener('click', async () => {
         return;
     }
 
+    // Reset audio processing latency measurement
+    firstAudioChunkTime = null;
+    firstTranscriptionTime = null;
+    isMeasuringFirstChunk = true;
+
     logServerMessage("Start Recording button clicked. Requesting microphone access...");
     updateStatus("Requesting microphone...");
 
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                channelCount: 1,
+                sampleRate: TARGET_SAMPLE_RATE
+            } 
+        });
+        
         logServerMessage("Microphone access granted.");
         updateStatus("Microphone active.");
 
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: TARGET_SAMPLE_RATE
+        });
+        
         mediaStreamSource = audioContext.createMediaStreamSource(stream);
 
-        // Create a ScriptProcessorNode for direct audio processing
-        // Arguments for createScriptProcessor: bufferSize, numberOfInputChannels, numberOfOutputChannels
-        // BUFFER_SIZE is defined above (e.g., 4096)
-        scriptProcessor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
-
-        scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
-            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-                return;
+        try {
+            // Instead of using a Blob URL, use a simpler approach with ScriptProcessorNode
+            // which has better cross-origin compatibility
+            if (!audioContext.createScriptProcessor) {
+                throw new Error("ScriptProcessorNode not supported in this browser");
             }
-
-            const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
-
-            // 1. Downsample the audio
-            const downsampledBuffer = downsampleBuffer(inputData, audioContext.sampleRate, TARGET_SAMPLE_RATE);
-
-            // 2. Convert to 16-bit PCM
-            const pcmDataArray = floatTo16BitPCM(downsampledBuffer);
             
-            // 3. Base64 encode the PCM data
-            // The pcmDataArray is an Int16Array. We need its underlying ArrayBuffer to get bytes.
-            // Then convert bytes to base64 string.
-            const pcmBytes = new Uint8Array(pcmDataArray.buffer);
-            const base64Audio = btoa(String.fromCharCode.apply(null, pcmBytes));
-
-            if (audioProcessingEvent.ครั้ง === undefined) { 
-                console.log(`onaudioprocess: Input SR ${audioContext.sampleRate}, Target SR ${TARGET_SAMPLE_RATE}`);
-                console.log(`Input samples: ${inputData.length}, Downsampled samples: ${downsampledBuffer.length}, PCM bytes: ${pcmBytes.length}`);
-                // Log a snippet of PCM data for debugging
-                console.log("PCM Data Snippet (first 10 values):", pcmDataArray.slice(0, 10));
-                logServerMessage(`Sending audio chunk (downsampled to ${TARGET_SAMPLE_RATE} Hz)...`);
-                audioProcessingEvent.ครั้ง = 0;
-            }
-            audioProcessingEvent.ครั้ง++;
-            if (audioProcessingEvent.ครั้ง > (TARGET_SAMPLE_RATE / BUFFER_SIZE / 2) ) audioProcessingEvent.ครั้ง = undefined; // Log approx twice per second
+            const bufferSize = 2048;
+            const scriptProcessor = audioContext.createScriptProcessor(bufferSize, 1, 1);
             
-            // 4. Send via WebSocket
-            const sendAudioPayload = {
-                command: "send_audio",
-                audio: base64Audio,
-                sample_rate: TARGET_SAMPLE_RATE
+            scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
+                const inputBuffer = audioProcessingEvent.inputBuffer;
+                const inputData = inputBuffer.getChannelData(0);
+                
+                if (isMeasuringFirstChunk) {
+                    firstAudioChunkTime = performance.now();
+                    isMeasuringFirstChunk = false;
+                }
+                
+                // Convert to 16-bit PCM
+                const pcmData = new Int16Array(inputData.length);
+                for (let i = 0; i < inputData.length; i++) {
+                    const s = Math.max(-1, Math.min(1, inputData[i]));
+                    pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+                
+                // Send the audio data to the WebSocket server
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
+                    // Convert the audio buffer to base64
+                    const audioData = new Uint8Array(pcmData.buffer);
+                    const base64Audio = btoa(String.fromCharCode.apply(null, audioData));
+                    
+                    // Create the audio command payload
+                    const audioPayload = {
+                        command: "send_audio",
+                        audio: base64Audio,
+                        sample_rate: TARGET_SAMPLE_RATE
+                    };
+                    websocket.send(JSON.stringify(audioPayload));
+                    
+                    // Log audio chunk info (less frequent to avoid spam)
+                    if (Math.random() < 0.1) { // Log ~10% of chunks
+                        logServerMessage(`🎤 Audio chunk sent: ${audioData.length} bytes, ${TARGET_SAMPLE_RATE}Hz`);
+                    }
+                }
             };
-            websocket.send(JSON.stringify(sendAudioPayload));
-        };
 
-        // Connect the nodes: mediaStreamSource -> scriptProcessor -> audioContext.destination
-        mediaStreamSource.connect(scriptProcessor);
-        scriptProcessor.connect(audioContext.destination); // Necessary to keep the processor running
-
-        logServerMessage("Audio processing node created and connected. Capturing audio...");
-
-        // Send the 'start_listening' command to the server
-        if (websocket && websocket.readyState === WebSocket.OPEN) {
-            const startListeningPayload = { command: "start_listening" };
-            websocket.send(JSON.stringify(startListeningPayload));
-            logServerMessage("Sent 'start_listening' command to server.");
-        } else {
-            logServerMessage("Cannot send 'start_listening', WebSocket not open.");
-            //  Should we attempt to stop/cleanup audioContext if WS is not open here?
-            // For now, let's assume WS should be open if this button is enabled.
+            mediaStreamSource.connect(scriptProcessor);
+            scriptProcessor.connect(audioContext.destination);
+            
+            startButton.disabled = true;
+            stopButton.disabled = false;
+            updateStatus("Recording...");
+            logServerMessage("Started recording and processing audio.");
+            
+        } catch (error) {
+            logServerMessage(`Error creating audio processor: ${error.message}`);
+            updateStatus("Audio Processing Error");
+            console.error("Audio processing error:", error);
         }
 
-        startButton.disabled = true;
-        stopButton.disabled = false;
-
-        // We need to store the stream from getUserMedia to stop its tracks later
-        window.localStream = stream;
-
     } catch (error) {
-        console.error("Error accessing microphone:", error);
         logServerMessage(`Error accessing microphone: ${error.message}`);
-        updateStatus("Microphone access denied or error.");
+        updateStatus("Microphone Error");
+        console.error("Microphone access error:", error);
     }
 });
 
 stopButton.addEventListener('click', () => {
-    logServerMessage("Stop Recording button clicked.");
-    updateStatus("Stopping recording...");
+    if (audioContext) {
+        // Send stop_listening command before closing audio context
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+            const stopListeningPayload = {
+                command: "stop_listening"
+            };
+            websocket.send(JSON.stringify(stopListeningPayload));
+            logServerMessage("📡 Sent 'stop_listening' command to server.");
 
-    // 1. Stop client-side audio capture and processing
-    if (mediaStreamSource) {
-        mediaStreamSource.disconnect();
+            // Request final transcript
+            setTimeout(() => {
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
+                    logServerMessage("🔄 Requesting final transcript and session finalization...");
+                    logServerMessage("💾 This will trigger Azure Files storage of complete session data");
+                    const getTranscriptPayload = {
+                        command: "get_transcript"
+                    };
+                    websocket.send(JSON.stringify(getTranscriptPayload));
+                    logServerMessage("📡 Sent 'get_transcript' command to server.");
+                }
+            }, 1000); // Wait 1 second for processing to complete
+        }
+
+        // Disconnect all audio nodes
+        if (mediaStreamSource) {
+            mediaStreamSource.disconnect();
+        }
+        
+        // Stop all audio tracks from the stream
+        if (mediaStreamSource && mediaStreamSource.mediaStream) {
+            const tracks = mediaStreamSource.mediaStream.getTracks();
+            tracks.forEach(track => track.stop());
+        }
+        
+        audioContext.close().then(() => {
+            logServerMessage("Audio context closed successfully.");
+        }).catch(error => {
+            logServerMessage(`Error closing audio context: ${error.message}`);
+        });
+        
+        audioContext = null;
         mediaStreamSource = null;
     }
-    if (scriptProcessor) {
-        scriptProcessor.disconnect();
-        scriptProcessor.onaudioprocess = null; // Remove the handler
-        scriptProcessor = null;
-    }
-    if (audioContext && audioContext.state !== 'closed') {
-        // Stop all tracks from the media stream used by getUserMedia
-        if (window.localStream) { // Assuming you store the stream from getUserMedia globally or pass it
-            window.localStream.getTracks().forEach(track => track.stop());
-            window.localStream = null; // Clear the stream
-        }
-        audioContext.close().then(() => {
-            logServerMessage("AudioContext closed.");
-        });
-        audioContext = null;
-    }
-
-    // 2. Send 'stop_listening' command to the server
-    if (websocket && websocket.readyState === WebSocket.OPEN) {
-        const stopListeningPayload = { command: "stop_listening" };
-        websocket.send(JSON.stringify(stopListeningPayload));
-        logServerMessage("Sent 'stop_listening' command to server.");
-
-        // 3. After a brief moment (or ideally after receiving 'listening_stopped' event),
-        // send 'get_transcript' to get the final consolidated text.
-        // For simplicity here, we'll use a timeout. A more robust solution would wait for the server's ack.
-        setTimeout(() => {
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                const getTranscriptPayload = { command: "get_transcript" };
-                websocket.send(JSON.stringify(getTranscriptPayload));
-                logServerMessage("Sent 'get_transcript' command to server.");
-            }
-        }, 500); // 500ms delay - adjust as needed
-
-    } else {
-        logServerMessage("WebSocket not open. Cannot send stop_listening or get_transcript.");
-    }
-
+    
     startButton.disabled = false;
     stopButton.disabled = true;
-    updateStatus("Recording stopped. Ready to start new recording.");
-    // Optionally clear the realtime transcript area
-    // realtimeTranscript.textContent = ""; 
+    updateStatus("Stopped");
+    logServerMessage("Stopped recording.");
 });
 
 function updateStatus(message) {
@@ -278,6 +445,11 @@ function logServerMessage(message) {
     if (typeof message === 'object') message = JSON.stringify(message);
     p.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
     serverMessages.insertBefore(p, serverMessages.firstChild); // Add to top
+    
+    // Check if this is a latency metric message and update the display
+    if (message.includes('LATENCY METRIC')) {
+        updateLatencyMetricsDisplay();
+    }
 }
 
 function appendRealtimeTranscript(text) { // This might be replaced by direct setting in onmessage
@@ -321,6 +493,80 @@ function floatTo16BitPCM(input) {
         output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
     }
     return output;
+}
+
+// Helper function to format time in both ms and seconds
+function formatTimeWithUnits(milliseconds) {
+    if (milliseconds === null || milliseconds === undefined) return 'N/A';
+    const seconds = milliseconds / 1000;
+    return `${milliseconds.toFixed(2)} ms (${seconds.toFixed(3)} s)`;
+}
+
+// Helper function to calculate average of an array
+function calculateAverage(arr) {
+    if (!arr || arr.length === 0) return 0;
+    const sum = arr.reduce((a, b) => a + b, 0);
+    return sum / arr.length;
+}
+
+// Update the latency metrics display
+function updateLatencyMetricsDisplay() {
+    // Update individual metrics
+    const modelLoadTimeEl = document.getElementById('modelLoadTime');
+    const audioLatencyEl = document.getElementById('audioLatency');
+    const avgModelLoadEl = document.getElementById('avgModelLoad');
+    const avgAudioLatencyEl = document.getElementById('avgAudioLatency');
+    
+    // Current values
+    if (modelReadyTime && connectionStartTime) {
+        const latency = modelReadyTime - connectionStartTime;
+        modelLoadTimeEl.textContent = formatTimeWithUnits(latency);
+    }
+    
+    if (firstTranscriptionTime && firstAudioChunkTime) {
+        const latency = firstTranscriptionTime - firstAudioChunkTime;
+        audioLatencyEl.textContent = formatTimeWithUnits(latency);
+    }
+    
+    // Average values
+    const avgModelLoad = calculateAverage(latencyStats.modelLoadTimes);
+    if (latencyStats.modelLoadTimes && latencyStats.modelLoadTimes.length > 0) {
+        avgModelLoadEl.textContent = `${formatTimeWithUnits(avgModelLoad)} (${latencyStats.modelLoadTimes.length} samples)`;
+    } else {
+        avgModelLoadEl.textContent = 'N/A';
+    }
+    
+    const avgAudioLatency = calculateAverage(latencyStats.processingLatencies);
+    if (latencyStats.processingLatencies && latencyStats.processingLatencies.length > 0) {
+        avgAudioLatencyEl.textContent = `${formatTimeWithUnits(avgAudioLatency)} (${latencyStats.processingLatencies.length} samples)`;
+    } else {
+        avgAudioLatencyEl.textContent = 'N/A';
+    }
+}
+
+// Set up reset metrics button
+const resetMetricsButton = document.getElementById('resetMetricsButton');
+if (resetMetricsButton) {
+    resetMetricsButton.addEventListener('click', () => {
+        // Clear the statistics
+        latencyStats.modelLoadTimes = [];
+        latencyStats.processingLatencies = [];
+        
+        // Reset the current measurements
+        connectionStartTime = null;
+        modelReadyTime = null;
+        firstAudioChunkTime = null;
+        firstTranscriptionTime = null;
+        isMeasuringFirstChunk = true;
+        
+        // Reset the display
+        document.getElementById('modelLoadTime').textContent = 'N/A';
+        document.getElementById('audioLatency').textContent = 'N/A';
+        document.getElementById('avgModelLoad').textContent = 'N/A';
+        document.getElementById('avgAudioLatency').textContent = 'N/A';
+        
+        logServerMessage("Latency metrics have been reset.");
+    });
 }
 
 // Initialize button states or other UI aspects if needed
